@@ -39,7 +39,10 @@
 
 #include "qphix/geometry.h"
 
+#include <qphix/qphix_config.h>
+#ifdef QPHIX_USE_QDPXX
 #include "qdp.h"
+#endif
 
 template <typename FT>
 constexpr int get_veclen()

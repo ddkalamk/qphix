@@ -3,6 +3,16 @@ add_compile_options(${EXT_CXXFLAGS})
 list(APPEND framework_sources cli_args.cc)
 
 if(${testing})
+  # The "NoQDP" timing benchmarks do not depend on QDP++. Build them whenever
+  # testing is enabled, regardless of whether QDP++ was found. They only need a
+  # small QDP-free framework (command line parsing).
+  add_library(noqdp_testlib cli_args.cc)
+  target_link_libraries(noqdp_testlib qphix_codegen)
+
+  add_executable(time_dslash_noqdp time_dslash_noqdp.cc timeDslashNoQDP.h timeDslashNoQDP.cc)
+  target_link_libraries(time_dslash_noqdp noqdp_testlib qphix_solver qphix_codegen ${EXT_LIBS})
+  list(APPEND built_targets time_dslash_noqdp)
+
   if(${QDPXX_CXX_FOUND})
      list(APPEND framework_headers unittest.h dslashm_w.h reunit.h invbicgstab_test.h mesfield.h)
 
@@ -23,10 +33,6 @@ if(${testing})
 
      add_library(testlib ${framework_sources} ${framework_headers} ${header_files})
     target_link_libraries(testlib qphix_codegen)
-
-    add_executable(time_dslash_noqdp time_dslash_noqdp.cc timeDslashNoQDP.h timeDslashNoQDP.cc)
-    target_link_libraries(time_dslash_noqdp testlib qphix_solver ${EXT_LIBS})
-    list(APPEND built_targets time_dslash_noqdp)
 
     if(${clover})
       add_executable(time_clov_noqdp time_clov_noqdp.cc timeClovNoQDP.h timeClovNoQDP.cc)

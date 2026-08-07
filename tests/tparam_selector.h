@@ -4,10 +4,14 @@
 #include "prec.h"
 
 #include <qphix/print_utils.h>
+#include <qphix/qphix_config.h>
 
+#ifdef QPHIX_USE_QDPXX
 #include <qdp.h>
+#endif
 #include "qphix_codegen/decl_common.h"
 
+#ifdef QPHIX_USE_QDPXX
 using namespace QDP;
 
 template <typename FT>
@@ -31,6 +35,16 @@ struct QdpTypes<double> {
   typedef LatticeColorMatrixD QdpGauge;
   typedef LatticeDiracFermionD QdpSpinor;
 };
+#else
+// QDP++ is not available. The NoQDP timing tests never actually use these
+// types (they are only passed as template parameters and ignored), so provide
+// harmless placeholder typedefs to keep the dispatch machinery compiling.
+template <typename FT>
+struct QdpTypes {
+  typedef int QdpGauge;
+  typedef int QdpSpinor;
+};
+#endif
 
 template <class TestClass>
 static void call(TestClass &instance, Prec prec, int soalen, bool compress12);

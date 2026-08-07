@@ -2,7 +2,10 @@
 
 #include "veclen.h"
 
+#include <qphix/qphix_config.h>
+#ifdef QPHIX_USE_QDPXX
 #include <qdp.h>
+#endif
 #include <qphix/print_utils.h>
 
 using QPhiX::masterPrintf;

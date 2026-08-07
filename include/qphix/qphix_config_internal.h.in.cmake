@@ -1,6 +1,7 @@
 #ifndef QPHIX_CONFIG_INTERNAL_H
 #define QPHIX_CONFIG_INTERNAL_H
 
+#cmakedefine QPHIX_USE_QDPXX
 #cmakedefine QPHIX_USE_QDPXX_ALLOC
 #cmakedefine QPHIX_USE_MM_MALLOC
 #cmakedefine QPHIX_EMIT_MESSAGES
