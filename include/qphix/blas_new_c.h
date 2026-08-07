@@ -9,6 +9,7 @@
 #include "qphix/complex_functors.h"
 #include "qphix/arith_type.h"
 
+#include <cstdint>
 #include <omp.h>
 #include <iostream>
 namespace QPhiX

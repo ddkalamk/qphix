@@ -10,6 +10,8 @@
 #include "qphix/blas_new_c.h"
 #include "qphix/print_utils.h"
 #include "qphix/tsc.h"
+
+#include <cstdint>
 #include "qphix/abs_solver.h"
 
 namespace QPhiX

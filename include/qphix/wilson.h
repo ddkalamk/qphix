@@ -4,6 +4,8 @@
 #include "qphix/dslash_def.h"
 #include "qphix/blas.h"
 
+#include <cassert>
+
 namespace QPhiX
 {
 
