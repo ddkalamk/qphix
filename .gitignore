@@ -8,6 +8,10 @@
 *.iso
 *.jar
 *.log
+
+# Out-of-source CMake build and install trees
+/build*/
+/install*/
 *.o
 *.orig
 *.rar

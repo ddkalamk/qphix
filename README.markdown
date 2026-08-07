@@ -32,9 +32,10 @@ contains some test programs.
 | `./time_dslash_noqdp` | Time the Dslash operator, Wilson operator, and solvers,  without linkage to QDP++ |
 | `./time_clov_noqdp` | Time the "Clover Dslash", Clover operator, and solver without linkage to QDP++ |
 
-The installation and building of test programs is done using the GNU automake
-system. Configuration is performed with `autoconf`. The `Makefile.in`-s are not
-checked into the repository and need to be regenerated.
+The library and its test programs are built with **CMake**. The kernel code
+generator (`libqphix_codegen`) is built automatically during the CMake build, so
+no separate code-generation step is required. The older GNU Autotools
+(`autoconf`/`automake`) flow is no longer used.
 
 ### Getting the library
 
@@ -42,93 +43,167 @@ The library can be downloaded from the [GitHub repository](https://github.com/Je
 
 ### Dependencies
 
-- The [QDP++ library](http://usqcd-software.github.io/qdpxx/) -- to build the test programs
-- Gnu Autoconf and Automake -- to regenerate the build system
-- `make` -- to build and install
-- Intel C++ Compiler (Code tested with icpc (ICC) 14.0.1 20131008)
-- MPI for multi-node builds
-- Intel MPI and CML Proxy for multi Xeon Phi running. Please contact Intel Parallel Computing Labs for CML Proxy source code.
+- `cmake` (>= 3.1) and `make` (or another CMake generator) -- to configure and build
+- A C++11 compiler with OpenMP support -- e.g. GCC, Clang or the Intel C++ Compiler
+- `python3` with the `jinja2` package -- used by the kernel code generator
+- MPI for multi-node (`parscalar`) builds
+- The [QDP++ library](http://usqcd-software.github.io/qdpxx/) -- **optional**,
+  only required by the correctness tests that compare against QDP++ (e.g.
+  `t_dslash`, `t_clov_dslash`). The `*_noqdp` timing benchmarks such as
+  `time_dslash_noqdp` build and run without QDP++.
+- QMP -- **optional**. Multi-node runs can use either QMP or the built-in native
+  MPI backend (see "Multi-node runs with native MPI" below), so QMP is not
+  required.
 
-NB: The code was tested with ICC 14.0.1 from Intel Composer XE 2013 SP1.1.106. 
-Some funnies were observed with the BLAS routines using ICC fom Composer XE 2015
-
-Future compiler support is planned/ongoing. Please see `TODO`.
-
-### Generating the build system
-
-- Obtain the source code distribution, which should have a toplevel directory called qphix
-- Regenerate the build system with commands: 
-
-        cd qphix
-        autoreconf
+The code builds with modern GCC (tested with GCC 14). Future compiler support is
+planned/ongoing. Please see `TODO`.
 
 ### Configuring the package
 
-The package has some components most of which can be selected with switches to configure:
+An out-of-source build is recommended. The most commonly used options are
+passed to CMake with `-D<option>=<value>`:
 
-| Flag | Description |
+| Option | Description |
 | --- | --- |
-| `--prefix=<install_dir>`  | Install into directory <install_dir> |
-| `--enable-clover`         | Enable Clover term related codes (default true) |
-| `--enable-proc=PROC`      | Select kernels for processor PROC. Allowed values are SCALAR,AVX,MIC for now	 |
-| `--with-qmp<qmp_dir>`     | QMP Library is in <qmp_dir> |
-| `--with-qdp=<qdpxx_dir>`  | QDP++ library is in <qdpxx_dir> |
-| `--enable-soalen=SOA`     | Set the SOA-length to SOA (SOA=4,8,16 as appropriate)  |
-| `--enable-cean`           | Enable C++ Extended Array Notation (Cilk++ notation) in some places (default: disabled) |
-| `--enable-mm-malloc`      | Use mm_malloc for allocating aligned arrays if disabled posix_memalign will be used. Currently Xeon Phi will use a mixture of mmap and _mm_malloc irrespective of this value (default: enabled) |
+| `-DCMAKE_INSTALL_PREFIX=<dir>` | Install location for headers, libraries and `bin/` test programs |
+| `-Disa=ISA` | Target instruction set: `scalar`, `sse`, `avx`, `avx2`, `avx512`, `mic`, `qpx` (default `avx`) |
+| `-Dtesting=TRUE` | Build the test / timing programs (default `OFF`) |
+| `-Dclover=TRUE` | Build the Clover term kernels (default `ON`) |
+| `-Dtwisted_mass=TRUE` | Build the Twisted-Mass kernels (default `OFF`) |
+| `-Dtm_clover=TRUE` | Build the Twisted-Mass + Clover kernels (default `OFF`) |
+| `-Dparallel_arch=scalar\|parscalar` | Single-node (`scalar`) or multi-node QMP/MPI (`parscalar`) build (default `scalar`) |
+| `-DQDPXX_DIR=<dir>` | Location of a QDP++ install. Only needed for the tests that compare against QDP++ |
+| `-DQMP_DIR=<dir>` | Location of a QMP install (for `parscalar` builds) |
+| `-Dmm_malloc=TRUE` | Use `_mm_malloc` for aligned allocation (default `ON`; `posix_memalign` otherwise) |
+| `-DCMAKE_CXX_COMPILER=<cxx>` | C++ compiler (e.g. `g++`, `mpicxx`) |
+| `-DCMAKE_CXX_FLAGS="..."` | Compiler flags, including the target architecture flag (see below) |
+| `-Dhost_cxx` / `-Dhost_cxxflags` | Compiler / flags used to build the code generator on the build host |
 
-In addition, compiler flags can be passed via variables `CXXFLAGS`, `CFLAGS`
-and teh compiler can be selected via vriables `CXX` and `CC`.
+With GCC/Clang the `restrict` keyword is not accepted in C++, so add
+`-Drestrict=__restrict__` to `CMAKE_CXX_FLAGS`.
 
-When compiling for Xeon Phi in native mode or cross compiling in general it is
-useful to switch autoconf into cross compile mode. This can be achieved by
-giving a different value for `--host` and `--build` e.g. for Xeon Phi:
-`--host=x86_64-linux-gnu --build=none-none-none`
+Select the architecture flag to match `-Disa`:
 
-E.g: 
-
-For AVX: 
-
-    configure --prefix=<install_location> \
-              --with-qdp=<QDP++ installation>
-              --enable-proc=AVX \
-              --enable-soalen=8 \
-              --enable-clover \
-              --enable-openmp \
-              --enable-cean \
-              --enable-mm-malloc \
-              CXXFLAGS="-openmp -g -O2 -finline-functions -fno-alias -std=c++11 -xAVX -vec-report -restrict" \
-              CFLAGS="-openmp -g  -O2 -fno-alias -std=c99 -xAVX -vec-report -restrict" \
-              CXX="mpiicpc" \
-              CC="mpiicc"
-
-or for MIC: 
-
-    configure --prefix=<install_location> \
-             --with-qdp=<QDP++ installation>
-             --enable-proc=MIC \
-             --enable-soalen=8 \
-             --enable-clover \ 
-             --enable-openmp \
-             --enable-cean \
-             --enable-mm-malloc \
-             CXXFLAGS="-openmp -mmic -vec-report -restrict -mGLOB_default_function_attrs=\"use_gather_scatter_hint=off\" -g -O2 -finline-functions -fno-alias -std=c++0x" \
-             CFLAGS="-mmic -vec-report -restrict -mGLOB_default_function_attrs=\"use_gather_scatter_hint=off\" -openmp -g  -O2 -fno-alias -std=c9l9
-             CXX="mpiicpc" \
-             CC="mpiicc" \
-             --host=x86_64-linux-gnu --build=none-none-none
-
-In addition it has been found that GCC and Clang don't like the restrict
-keyword in C++ source, but allow defining the `__restrict__` extension. So you
-may need to add `-Drestrict=__restrict__` to `CXXFLAGS`.
+| `-Disa` | Suggested `-march` (GCC/Clang) | SOA length |
+| --- | --- | --- |
+| `avx`    | `-march=sandybridge` | 4 |
+| `avx2`   | `-march=haswell` | 4 |
+| `avx512` | `-march=skylake-avx512` (or `-march=knl` for KNL) | 8 |
 
 ### Building And Installing
 
-Once configured the package can be installed using `make && make install` the
-test programs are build in the `<install_dir>/tests/` directory and are
-installed in the `<install_dir>/bin/` directory Since the test programs may
-check double precision solves as well it is recommended to build with a double
-precision build of QDP++.
+Configure, build and (optionally) install with:
+
+    # Configure an out-of-source build (here for AVX2)
+    cmake -S . -B build_avx2 \
+        -Disa=avx2 \
+        -Dtesting=TRUE \
+        -DCMAKE_INSTALL_PREFIX="$PWD/install_avx2" \
+        -DCMAKE_CXX_COMPILER=g++ \
+        -DCMAKE_CXX_FLAGS="-O3 -march=haswell -Drestrict=__restrict__"
+
+    # Build a specific target (or omit --target to build everything)
+    cmake --build build_avx2 --target time_dslash_noqdp -j
+
+    # Optional: install into CMAKE_INSTALL_PREFIX
+    cmake --build build_avx2 --target install
+
+The test / timing executables are produced under `build_<isa>/tests/` and, when
+installed, in `<CMAKE_INSTALL_PREFIX>/bin/`. The correctness tests that compare
+against QDP++ additionally require `-DQDPXX_DIR=<dir>`, and it is recommended to
+point them at a double-precision build of QDP++.
+
+### Example: building `time_dslash_noqdp` for AVX2 and AVX512
+
+The `time_dslash_noqdp` Wilson-Dslash timing benchmark does not need QDP++. To
+build it for both AVX2 and AVX512:
+
+    cmake -S . -B build_avx2   -Disa=avx2   -Dtesting=TRUE -Dclover=FALSE \
+        -DCMAKE_CXX_COMPILER=g++ -DCMAKE_CXX_FLAGS="-O3 -march=haswell -Drestrict=__restrict__"
+    cmake --build build_avx2   --target time_dslash_noqdp -j
+
+    cmake -S . -B build_avx512 -Disa=avx512 -Dtesting=TRUE -Dclover=FALSE \
+        -DCMAKE_CXX_COMPILER=g++ -DCMAKE_CXX_FLAGS="-O3 -march=skylake-avx512 -Drestrict=__restrict__"
+    cmake --build build_avx512 --target time_dslash_noqdp -j
+
+This produces `build_avx2/tests/time_dslash_noqdp` (SOA length 4) and
+`build_avx512/tests/time_dslash_noqdp` (SOA length 8). The same commands are
+collected in the `build_dslash.sh` helper script. `-Dclover=FALSE` simply trims
+code generation for the Wilson-only benchmark; drop it to also build the Clover
+kernels.
+
+### Building with the Intel oneAPI compiler and Intel MPI
+
+The same build works with the Intel oneAPI C++ compiler (`icx`/`icpx`). To
+enable Intel MPI, use the Intel MPI compiler wrapper `mpiicpx` (which wraps
+`icpx` and links Intel MPI) as the C++ compiler. First source the oneAPI
+environment, then configure with Intel-style architecture flags:
+
+    source /opt/intel/oneapi/setvars.sh    # adjust to your oneAPI location
+
+    # AVX2 (SOA length 4)
+    cmake -S . -B build_avx2_intel   -Disa=avx2   -Dtesting=TRUE -Dclover=FALSE \
+        -Dhost_cxx=icpx -Dhost_cxxflags="-O3 -std=c++11" \
+        -DCMAKE_CXX_COMPILER=mpiicpx \
+        -DCMAKE_CXX_FLAGS="-O3 -xCORE-AVX2 -Drestrict=__restrict__"
+    cmake --build build_avx2_intel   --target time_dslash_noqdp -j
+
+    # AVX512 (SOA length 8)
+    cmake -S . -B build_avx512_intel -Disa=avx512 -Dtesting=TRUE -Dclover=FALSE \
+        -Dhost_cxx=icpx -Dhost_cxxflags="-O3 -std=c++11" \
+        -DCMAKE_CXX_COMPILER=mpiicpx \
+        -DCMAKE_CXX_FLAGS="-O3 -xCORE-AVX512 -Drestrict=__restrict__"
+    cmake --build build_avx512_intel --target time_dslash_noqdp -j
+
+Notes:
+
+- `-Dhost_cxx=icpx` builds the code generator with `icpx`; the target kernels
+  and test programs are compiled with `mpiicpx`.
+- Use Intel-style ISA flags with `icpx`: `-xCORE-AVX2` for AVX2 and
+  `-xCORE-AVX512` for AVX512 (equivalently `-march=haswell` /
+  `-march=skylake-avx512` are also accepted).
+- The resulting executables link Intel MPI and can be launched with `mpirun`,
+  e.g. `mpirun -n 1 ./build_avx2_intel/tests/time_dslash_noqdp ...`. Note that
+  the default `scalar` build is single-node; for a genuine multi-node run see
+  the next section.
+
+### Multi-node runs with native MPI (no QMP, no QDP++)
+
+QPhiX can perform its halo exchange using MPI directly, without QMP or QDP++.
+This is enabled by building for the `parscalar` architecture with `mpi_comms`
+turned on (the default) while providing neither QMP nor QDP++:
+
+    source /opt/intel/oneapi/setvars.sh    # adjust to your oneAPI location
+
+    cmake -S . -B build_avx512_mpi -Disa=avx512 -Dtesting=TRUE -Dclover=FALSE \
+        -Dparallel_arch=parscalar -Dmpi_comms=ON \
+        -Dhost_cxx=icpx -Dhost_cxxflags="-O3 -std=c++11" \
+        -DCMAKE_CXX_COMPILER=mpiicpx \
+        -DCMAKE_CXX_FLAGS="-O3 -xCORE-AVX512 -Drestrict=__restrict__"
+    cmake --build build_avx512_mpi --target time_dslash_noqdp -j
+
+Run it across multiple ranks, using `-geom Px Py Pz Pt` to describe the process
+grid (the product must equal the number of MPI ranks). For example, splitting a
+16x8x8x16 lattice across two ranks in the time direction:
+
+    mpirun -n 2 ./build_avx512_mpi/tests/time_dslash_noqdp \
+        -x 16 -y 8 -z 8 -t 16 -by 4 -bz 4 -c 4 -sy 1 -sz 1 \
+        -dslash -prec f -soalen 8 -i 50 -geom 1 1 1 2
+
+Notes:
+
+- The native MPI backend sets up a 4D periodic Cartesian communicator
+  (`MPI_Cart_create`) and uses `MPI_Isend`/`MPI_Irecv` for the face exchange.
+- At start-up `time_dslash_noqdp` runs a self-contained *comms checksum
+  self-test*: every rank exchanges a rank-independent reference pattern with its
+  neighbours and verifies, element-by-element, that it receives the same pattern
+  back. The number of mismatches (and a checksum) is reduced across all ranks
+  and reported as `RESULT: PASS`/`FAIL`, validating the halo exchange and the
+  cross-rank reduction independently of QDP++. On single-node builds it reports
+  that there are no inter-rank faces.
+- `parallel_arch=parscalar` normally selects the QMP backend; if a QMP or QDP++
+  installation *is* provided (via `-DQMP_DIR` / `-DQDPXX_DIR`) it takes
+  precedence and the QMP backend is used instead.
 
 ### Running the test programs
 
@@ -151,6 +226,19 @@ NB: Cores refers to the number of cores per node.
 Some tests may occationally support:
 
 `-prec=PRECISION`: precision to work in `h`=half, `f`=single, `d`=double
+
+For the `*_noqdp` timing benchmarks, additionally select the operation(s) to
+time (`-dslash`, `-mmat`, `-cg`, `-bicgstab`) and the SOA length with `-soalen`.
+E.g. to time the Wilson Dslash built above on a dual socket 8-core-per-socket
+Xeon:
+
+    # AVX2 (SOA length 4)
+    ./build_avx2/tests/time_dslash_noqdp -x 32 -y 32 -z 32 -t 32 -by 8 -bz 8 \
+        -pxy 1 -pxyz 0 -c 16 -sy 1 -sz 2 -minct 1 -compress12 -dslash -prec f -soalen 4 -i 500
+
+    # AVX512 (SOA length 8)
+    ./build_avx512/tests/time_dslash_noqdp -x 32 -y 32 -z 32 -t 32 -by 8 -bz 8 \
+        -pxy 1 -pxyz 0 -c 16 -sy 1 -sz 2 -minct 1 -compress12 -dslash -prec f -soalen 8 -i 500
 
 E.g. a typical clover dslash test on a dual socket 8 core-per-socket Xeon System would go like:
 
