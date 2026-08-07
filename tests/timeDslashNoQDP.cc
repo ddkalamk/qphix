@@ -15,6 +15,110 @@ using namespace QPhiX;
 #include "veclen.h"
 #include "tolerance.h"
 
+#include <cmath>
+
+// Self-contained halo-exchange checksum test.
+//
+// Every rank fills its face send buffers with a reference pattern that depends
+// ONLY on the physical direction and the element index (never on the rank). A
+// correct halo exchange therefore requires that each rank receives back exactly
+// that same pattern from each of its neighbours, regardless of the process
+// decomposition. Each rank verifies its received buffers element-by-element and
+// the number of mismatches (plus a running checksum) is reduced across all
+// ranks. This exercises the active comms backend (QMP or native MPI) and the
+// cross-rank reduction without any dependence on QDP++.
+template <typename FT, int V, int S, bool compress>
+static void commsChecksumTest(Geometry<FT, V, S, compress> &geom)
+{
+  masterPrintf("Comms checksum self-test:\n");
+
+#ifdef QPHIX_DO_COMMS
+  Comms<FT, V, S, compress> comms(&geom);
+
+  // Number of FT elements in each direction's face buffer (12 per site).
+  int NFaceDir[4];
+  NFaceDir[0] = (geom.Ny() * geom.Nz() * geom.Nt()) / 2;
+  NFaceDir[1] = (geom.Nx() * geom.Nz() * geom.Nt()) / 2;
+  NFaceDir[2] = (geom.Nx() * geom.Ny() * geom.Nt()) / 2;
+  NFaceDir[3] = (geom.Nx() * geom.Ny() * geom.Nz()) / 2;
+
+  // Rank-independent reference value for (direction, element). All terms are
+  // multiples of 1/8 and bounded, so they are represented exactly even in half
+  // precision -- the comparison below is then effectively exact.
+  auto refval = [](int d, int i) -> double {
+    return 1.0 + 0.25 * (double)d + 0.125 * (double)(i & 7);
+  };
+
+  double local_checksum = 0.0;
+  double local_mismatch = 0.0;
+  long local_elems = 0;
+  int num_nonlocal = 0;
+
+  for (int d = 0; d < 4; d++) {
+    if (comms.localDir(d)) {
+      continue;
+    }
+    num_nonlocal++;
+    int nElem = NFaceDir[d] * 12;
+
+    for (int half = 0; half < 2; half++) {
+      FT *snd = comms.getSendToDirBuf(2 * d + half);
+      FT *rcv = comms.getRecvFromDirBuf(2 * d + half);
+      for (int i = 0; i < nElem; i++) {
+        snd[i] = rep<FT, double>(refval(d, i));
+        rcv[i] = rep<FT, double>(0.0);
+      }
+    }
+
+    // Post non-blocking receives, then sends, then complete both.
+    comms.startRecvFromDir(2 * d + 0);
+    comms.startRecvFromDir(2 * d + 1);
+    comms.startSendDir(2 * d + 0);
+    comms.startSendDir(2 * d + 1);
+    comms.finishSendDir(2 * d + 0);
+    comms.finishSendDir(2 * d + 1);
+    comms.finishRecvFromDir(2 * d + 0);
+    comms.finishRecvFromDir(2 * d + 1);
+
+    for (int half = 0; half < 2; half++) {
+      FT *rcv = comms.getRecvFromDirBuf(2 * d + half);
+      for (int i = 0; i < nElem; i++) {
+        double got = rep<double, FT>(rcv[i]);
+        double expected = refval(d, i);
+        local_checksum += got;
+        if (std::fabs(got - expected) > 1.0e-3 * (1.0 + std::fabs(expected))) {
+          local_mismatch += 1.0;
+        }
+        local_elems++;
+      }
+    }
+  }
+
+  // Reduce across ranks using the active comms backend.
+  double global_checksum = local_checksum;
+  double global_mismatch = local_mismatch;
+  double global_elems = (double)local_elems;
+  CommsUtils::sumDouble(&global_checksum);
+  CommsUtils::sumDouble(&global_mismatch);
+  CommsUtils::sumDouble(&global_elems);
+
+  masterPrintf("\t nodes = %d, non-local directions on rank 0 = %d\n",
+               CommsUtils::numNodes(),
+               num_nonlocal);
+  masterPrintf("\t exchanged elements across all ranks = %.0f\n", global_elems);
+  masterPrintf("\t global received checksum             = %.10e\n", global_checksum);
+  masterPrintf("\t element mismatches across all ranks  = %.0f\n", global_mismatch);
+  if (global_mismatch == 0.0) {
+    masterPrintf("\t RESULT: PASS (halo exchange consistent across ranks)\n");
+  } else {
+    masterPrintf("\t RESULT: FAIL (%.0f mismatched elements)\n", global_mismatch);
+  }
+#else
+  masterPrintf(
+      "\t single-node build: no inter-rank faces (trivially consistent)\n");
+#endif
+}
+
 void TimeDslash::run()
 {
   call(*this, args_.prec, args_.soalen, args_.compress12);
@@ -72,6 +176,10 @@ void TimeDslash::runTest()
                                     true);
 
   Dslash<FT, V, S, compress> D32(&geom, t_boundary, coeff_s, coeff_t);
+
+  // Validate the comms backend (halo exchange + cross-rank reduction) before
+  // timing. This is a no-op for single-node builds.
+  commsChecksumTest<FT, V, S, compress>(geom);
 
   // Allocate data for the gauges
   Gauge *packed_gauge_cb0 = (Gauge *)geom.allocCBGauge();
