@@ -13,6 +13,15 @@
 #endif
 
 #ifdef QPHIX_DO_COMMS
+#ifdef QPHIX_MPI_COMMS
+
+#include <mpi.h>
+#include "qphix/mpi_comms_utils.h"
+
+#endif
+#endif
+
+#ifdef QPHIX_DO_COMMS
 #include <queue>
 #endif
 
@@ -589,6 +598,231 @@ inline int numNodes()
 };
 
 #endif // QPHIX_QMP_COMMS
+
+#ifdef QPHIX_MPI_COMMS
+QPHIX_MESSAGE("Doing native MPI Comms")
+
+// Arbitrary tag for the halo exchange messages
+#define QPHIX_DSLASH_MPI_TAG (12)
+
+/*! Communicating version built directly on MPI (no QMP). */
+template <typename T, int V, int S, const bool compressP>
+class Comms
+{
+ public:
+  Comms(Geometry<T, V, S, compressP> *geom)
+  {
+    // Deal with the faces
+    NFaceDir[0] = (geom->Ny() * geom->Nz() * geom->Nt()) / 2;
+    NFaceDir[1] = (geom->Nx() * geom->Nz() * geom->Nt()) / 2;
+    NFaceDir[2] = (geom->Nx() * geom->Ny() * geom->Nt()) / 2;
+    NFaceDir[3] = (geom->Nx() * geom->Ny() * geom->Nz()) / 2;
+
+    // Decide which directions are local by appealing to the MPI Cartesian
+    // process geometry.
+    const int *machine_size = MPIComms::logicalDims();
+    for (int d = 0; d < 4; d++) {
+      localDir_[d] = (machine_size[d] > 1) ? false : true;
+    }
+
+    myRank = MPIComms::nodeNumber();
+    const int *mpi_dims = MPIComms::logicalDims();
+    const int *mpi_coords = MPIComms::logicalCoords();
+    int fw_neigh_coords[4];
+    int bw_neigh_coords[4];
+
+    totalBufSize = 0;
+    for (int d = 0; d < 4; d++) {
+      if (!localDir(d)) {
+        for (int dim = 0; dim < 4; dim++) {
+          fw_neigh_coords[dim] = bw_neigh_coords[dim] = mpi_coords[dim];
+        }
+        bw_neigh_coords[d]--;
+        if (bw_neigh_coords[d] < 0)
+          bw_neigh_coords[d] = mpi_dims[d] - 1;
+        fw_neigh_coords[d]++;
+        if (fw_neigh_coords[d] == mpi_dims[d])
+          fw_neigh_coords[d] = 0;
+        myNeighboursInDir[2 * d + 0] = MPIComms::nodeNumberFrom(bw_neigh_coords);
+        myNeighboursInDir[2 * d + 1] = MPIComms::nodeNumberFrom(fw_neigh_coords);
+        faceInBytes[d] =
+            NFaceDir[d] * 12 * sizeof(T); // 12 T elements of the half spinor
+        totalBufSize += faceInBytes[d];
+      } else {
+        myNeighboursInDir[2 * d + 0] = myRank;
+        myNeighboursInDir[2 * d + 1] = myRank;
+        faceInBytes[d] = 0;
+      }
+    }
+    totalBufSize *= 4; // 2 bufs for sends & 2 for recvs
+
+    for (int d = 0; d < 4; d++) {
+      if (!localDir(d)) {
+        sendToDir[2 * d + 0] = (T *)ALIGNED_MALLOC(faceInBytes[d], 4096);
+        sendToDir[2 * d + 1] = (T *)ALIGNED_MALLOC(faceInBytes[d], 4096);
+        recvFromDir[2 * d + 0] = (T *)ALIGNED_MALLOC(faceInBytes[d], 4096);
+        recvFromDir[2 * d + 1] = (T *)ALIGNED_MALLOC(faceInBytes[d], 4096);
+      } else {
+        sendToDir[2 * d + 0] = NULL;
+        sendToDir[2 * d + 1] = NULL;
+        recvFromDir[2 * d + 0] = NULL;
+        recvFromDir[2 * d + 1] = NULL;
+      }
+      reqSendToDir[2 * d + 0] = reqRecvFromDir[2 * d + 0] = MPI_REQUEST_NULL;
+      reqSendToDir[2 * d + 1] = reqRecvFromDir[2 * d + 1] = MPI_REQUEST_NULL;
+    } // End loop over dir
+
+    // Determine if I am minimum/maximum in the time direction in the grid:
+    amIPtMin_ = (mpi_coords[3] == 0);
+    amIPtMax_ = (mpi_coords[3] == (mpi_dims[3] - 1));
+
+    numNonLocalDir_ = 0;
+    // Count the number of non local dirs and keep a compact map
+    for (int d = 0; d < 4; d++) {
+      if (!localDir(d)) {
+        nonLocalDir_[numNonLocalDir_] = d;
+        numNonLocalDir_++;
+      }
+    }
+  }
+
+  ~Comms(void)
+  {
+    for (int d = 0; d < 4; d++) {
+      if (!localDir(d)) {
+        ALIGNED_FREE(sendToDir[2 * d + 0]);
+        ALIGNED_FREE(sendToDir[2 * d + 1]);
+        ALIGNED_FREE(recvFromDir[2 * d + 0]);
+        ALIGNED_FREE(recvFromDir[2 * d + 1]);
+      }
+    }
+  }
+
+  inline void startSendDir(int d)
+  {
+    if (MPI_Isend((void *)sendToDir[d],
+                  faceInBytes[d / 2],
+                  MPI_BYTE,
+                  myNeighboursInDir[d],
+                  QPHIX_DSLASH_MPI_TAG,
+                  MPIComms::comm(),
+                  &reqSendToDir[d]) != MPI_SUCCESS) {
+      MPIComms::abort("Failed to start send");
+    }
+  }
+
+  inline void finishSendDir(int d)
+  {
+    if (MPI_Wait(&reqSendToDir[d], MPI_STATUS_IGNORE) != MPI_SUCCESS) {
+      MPIComms::abort("Wait on send failed");
+    }
+  }
+
+  inline void startRecvFromDir(int d)
+  {
+    if (MPI_Irecv((void *)recvFromDir[d],
+                  faceInBytes[d / 2],
+                  MPI_BYTE,
+                  myNeighboursInDir[d],
+                  QPHIX_DSLASH_MPI_TAG,
+                  MPIComms::comm(),
+                  &reqRecvFromDir[d]) != MPI_SUCCESS) {
+      MPIComms::abort("Recv from dir failed");
+    }
+  }
+
+  inline void finishRecvFromDir(int d)
+  {
+    if (MPI_Wait(&reqRecvFromDir[d], MPI_STATUS_IGNORE) != MPI_SUCCESS) {
+      MPIComms::abort("Wait on recv from dir failed");
+    }
+  }
+
+  // test if sent/received is completed
+  inline bool testSendToDir(int d)
+  {
+    int iflag;
+    if (MPI_Test(&reqSendToDir[d], &iflag, MPI_STATUS_IGNORE) != MPI_SUCCESS) {
+      MPIComms::abort("Test on send to dir failed");
+    }
+    return static_cast<bool>(iflag);
+  }
+
+  inline bool testRecvFromDir(int d)
+  {
+    int iflag;
+    if (MPI_Test(&reqRecvFromDir[d], &iflag, MPI_STATUS_IGNORE) != MPI_SUCCESS) {
+      MPIComms::abort("Test on recv from dir failed");
+    }
+    return static_cast<bool>(iflag);
+  }
+
+  inline void progressComms()
+  {
+    int flag = 0;
+    MPI_Iprobe(
+        MPI_ANY_SOURCE, MPI_ANY_TAG, MPIComms::comm(), &flag, MPI_STATUS_IGNORE);
+  }
+
+  inline bool localX() const { return localDir_[0]; }
+  inline bool localY() const { return localDir_[1]; }
+  inline bool localZ() const { return localDir_[2]; }
+  inline bool localT() const { return localDir_[3]; }
+  inline bool localDir(int d) const { return localDir_[d]; }
+
+  inline T *getSendToDirBuf(int dir) { return sendToDir[dir]; }
+  inline T *getRecvFromDirBuf(int dir) { return recvFromDir[dir]; }
+
+  /* Am I the processor with smallest (t=0) in time */
+  inline bool amIPtMin() const { return amIPtMin_; }
+
+  /* Am I the process with the largest (t=P_t - 1)  coordinate in time */
+  inline bool amIPtMax() const { return amIPtMax_; }
+
+  T *sendToDir[8]; // Send Buffers
+  T *recvFromDir[8]; // Recv Buffers
+  std::queue<int> recv_queue; // communication queue
+
+ private:
+  // Ranks of the neighbours in the X, Y, Z and T directions
+  int myRank;
+  int myNeighboursInDir[8];
+
+  unsigned int faceInBytes[4];
+  size_t totalBufSize;
+
+  MPI_Request reqSendToDir[8];
+  MPI_Request reqRecvFromDir[8];
+
+  int numNonLocalDir() { return numNonLocalDir_; }
+  int nonLocalDir(int d) { return nonLocalDir_[d]; }
+
+ private:
+  int NFaceDir[4];
+  bool localDir_[4];
+  bool amIPtMin_;
+  bool amIPtMax_;
+  int numNonLocalDir_;
+  int nonLocalDir_[4];
+};
+
+namespace CommsUtils
+{
+inline void sumDouble(double *d)
+{
+  MPI_Allreduce(MPI_IN_PLACE, d, 1, MPI_DOUBLE, MPI_SUM, MPIComms::comm());
+};
+inline void sumDoubleArray(double *d, int n)
+{
+  MPI_Allreduce(MPI_IN_PLACE, d, n, MPI_DOUBLE, MPI_SUM, MPIComms::comm());
+}
+inline int numNodes()
+{
+  return MPIComms::numNodes();
+}
+};
+
+#endif // QPHIX_MPI_COMMS
 
 #endif // ifndef QPHIX_DO_COMMS
 }; // Namespace

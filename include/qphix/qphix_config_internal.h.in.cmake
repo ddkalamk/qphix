@@ -11,6 +11,7 @@
 #cmakedefine QPHIX_DO_COMMS
 #cmakedefine QPHIX_USE_CEAN
 #cmakedefine QPHIX_QMP_COMMS
+#cmakedefine QPHIX_MPI_COMMS
 #cmakedefine QPHIX_BUILD_CLOVER
 #cmakedefine QPHIX_BUILD_TWISTED_MASS
 #cmakedefine QPHIX_BUILD_TWISTED_MASS_WITH_CLOVER

@@ -3,6 +3,9 @@
 #ifdef QPHIX_QMP_COMMS
 #include <qmp.h>
 #endif
+#ifdef QPHIX_MPI_COMMS
+#include "qphix/mpi_comms_utils.h"
+#endif
 
 namespace QPhiX
 {
@@ -13,8 +16,10 @@ std::map<unsigned long, unsigned long> aligned_alloc_map;
 void masterPrintf(const char *format, ...)
 {
 
-#ifdef QPHIX_QMP_COMMS
+#if defined(QPHIX_QMP_COMMS)
   if (QMP_is_primary_node()) {
+#elif defined(QPHIX_MPI_COMMS)
+  if (QPhiX::MPIComms::isPrimary()) {
 #endif
 
     va_list args;
@@ -22,7 +27,7 @@ void masterPrintf(const char *format, ...)
     vprintf(format, args);
     va_end(args);
     fflush(stdout);
-#ifdef QPHIX_QMP_COMMS
+#if defined(QPHIX_QMP_COMMS) || defined(QPHIX_MPI_COMMS)
   }
 #endif
 }
@@ -30,9 +35,12 @@ void masterPrintf(const char *format, ...)
 void localPrintf(const char *format, ...)
 {
 
-#ifdef QPHIX_QMP_COMMS
+#if defined(QPHIX_QMP_COMMS)
   int size = QMP_get_number_of_nodes();
   int rank = QMP_get_node_number();
+#elif defined(QPHIX_MPI_COMMS)
+  int size = QPhiX::MPIComms::numNodes();
+  int rank = QPhiX::MPIComms::nodeNumber();
 #else
   int size = 1;
   int rank = 0;

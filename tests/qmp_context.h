@@ -10,6 +10,11 @@
 #include <qmp.h>
 #endif
 
+#ifdef QPHIX_MPI_COMMS
+#include <mpi.h>
+#include <qphix/mpi_comms_utils.h>
+#endif
+
 #include <omp.h>
 
 class QmpContext
@@ -25,6 +30,15 @@ class QmpContext
     }
     if (QMP_is_primary_node()) {
       printf("QMP IS INITIALIZED\n");
+    }
+#endif
+
+#ifdef QPHIX_MPI_COMMS
+    int provided;
+    if (MPI_Init_thread(&argc, &argv, MPI_THREAD_SINGLE, &provided) !=
+        MPI_SUCCESS) {
+      fprintf(stderr, "Failed to initialize MPI\n");
+      abort();
     }
 #endif
 
@@ -46,6 +60,15 @@ class QmpContext
     }
 #endif
 
+#ifdef QPHIX_MPI_COMMS
+    QPhiX::MPIComms::declareTopology(args_.qmp_geometry);
+    QPhiX::masterPrintf("Declared MPI Topology: %d %d %d %d\n",
+                        args_.qmp_geometry[0],
+                        args_.qmp_geometry[1],
+                        args_.qmp_geometry[2],
+                        args_.qmp_geometry[3]);
+#endif
+
 #ifdef QPHIX_QPX_SOURCE
     if (thread_bind) {
       QPhiX::setThreadAffinity(args_.NCores, args_.Sy * args_.Sz);
@@ -62,6 +85,10 @@ class QmpContext
 
 #ifdef QPHIX_QMP_COMMS
     QMP_finalize_msg_passing();
+#endif
+#ifdef QPHIX_MPI_COMMS
+    QPhiX::MPIComms::freeTopology();
+    MPI_Finalize();
 #endif
   }
 
